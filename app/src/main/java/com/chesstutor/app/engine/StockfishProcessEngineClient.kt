@@ -8,6 +8,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.BufferedWriter
 import java.io.File
 
@@ -23,10 +25,12 @@ class StockfishProcessEngineClient(
     private var stdinWriter: BufferedWriter? = null
     private var readerJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val analysisMutex = Mutex()
 
     private var activeRequest: AnalysisRequest? = null
     private var pendingResult: CompletableDeferred<PositionAnalysis>? = null
     private var latestInfo: UciInfoLine? = null
+    private val uciWaiters = ArrayDeque<CompletableDeferred<Unit>>()
     private val readyWaiters = ArrayDeque<CompletableDeferred<Unit>>()
     private var engineIdName: String = "Stockfish"
 
@@ -52,10 +56,26 @@ class StockfishProcessEngineClient(
             stdinWriter = proc.outputStream.bufferedWriter()
             readerJob = scope.launch { readLoop() }
 
+            val uciReady = CompletableDeferred<Unit>()
+            uciWaiters.add(uciReady)
+            if (!send("uci")) {
+                throw IllegalStateException("Failed to send UCI initialization command")
+            }
+
+            val uciOk = withTimeoutOrNull(4000) { uciReady.await() }
+            if (uciOk == null) {
+                val err = "Stockfish process started, but did not respond with uciok within 4000ms"
+                lastStartupError = err
+                dispose()
+                throw IllegalStateException(err)
+            }
+
             val ready = CompletableDeferred<Unit>()
             readyWaiters.add(ready)
-            send("uci")
-            send("isready")
+            if (!send("isready")) {
+                throw IllegalStateException("Failed to send isready command")
+            }
+
             val isReady = withTimeoutOrNull(4000) { ready.await() }
             if (isReady == null) {
                 val err = "Stockfish process started, but did not respond to isready within 4000ms"
@@ -87,15 +107,15 @@ class StockfishProcessEngineClient(
      * Stockfish supports UCI_Elo in range 1320..3190. For ratings below 1320,
      * it falls back to Skill Level 0..5 to avoid the artificial 1320 floor.
      */
-    suspend fun setElo(elo: Int) = withContext(Dispatchers.IO) {
+    override suspend fun setStrengthRating(rating: Int) = withContext(Dispatchers.IO) {
         if (!isAlive) return@withContext
-        if (elo >= 1320) {
+        if (rating >= 1320) {
             send("setoption name UCI_LimitStrength value true")
-            send("setoption name UCI_Elo value ${elo.coerceIn(1320, 3190)}")
+            send("setoption name UCI_Elo value ${rating.coerceIn(1320, 3190)}")
         } else {
-            // For sub-1320, disable Elo mode and use Skill Level 0..4
+            // For sub-1320, disable Elo mode and use Skill Level 0..5
             send("setoption name UCI_LimitStrength value false")
-            val skillLevel = ((elo - 400).coerceAtLeast(0) / 180).coerceIn(0, 5)
+            val skillLevel = ((rating - 400).coerceAtLeast(0) / 180).coerceIn(0, 5)
             send("setoption name Skill Level value $skillLevel")
         }
     }
@@ -129,6 +149,10 @@ class StockfishProcessEngineClient(
         if (trimmed.startsWith("id name ")) {
             engineIdName = trimmed.removePrefix("id name ").trim()
         }
+        if (trimmed == "uciok") {
+            uciWaiters.removeFirstOrNull()?.complete(Unit)
+            return
+        }
         if (trimmed == "readyok") {
             readyWaiters.removeFirstOrNull()?.complete(Unit)
             return
@@ -139,24 +163,36 @@ class StockfishProcessEngineClient(
         }
         UciProtocol.parseBestMove(line)?.let { move ->
             val req = activeRequest
-            val reqId = req?.requestId ?: 0
-            pendingResult?.complete(
-                PositionAnalysis(
-                    requestId = reqId,
-                    bestMoveUci = move,
-                    centipawns = latestInfo?.centipawns,
-                    mateInMoves = latestInfo?.mateInMoves,
-                    principalVariation = latestInfo?.pv ?: emptyList(),
-                    depth = latestInfo?.depth,
-                )
-            )
+            val deferred = pendingResult
+            if (req != null && deferred != null) {
+                try {
+                    val raw = PositionAnalysis(
+                        requestId = req.requestId,
+                        bestMoveUci = move,
+                        centipawns = latestInfo?.centipawns,
+                        mateInMoves = latestInfo?.mateInMoves,
+                        principalVariation = latestInfo?.pv ?: emptyList(),
+                        depth = latestInfo?.depth,
+                    )
+                    val validated = EngineResultValidator.validate(
+                        request = req,
+                        analysis = raw,
+                        scorePerspective = EngineResultValidator.ScorePerspective.SIDE_TO_MOVE,
+                    )
+                    deferred.complete(validated)
+                } catch (e: Exception) {
+                    deferred.completeExceptionally(e)
+                }
+            }
             activeRequest = null
             pendingResult = null
             latestInfo = null
         }
     }
 
-    override suspend fun analyze(request: AnalysisRequest): PositionAnalysis = withContext(Dispatchers.IO) {
+    override suspend fun analyze(request: AnalysisRequest): PositionAnalysis =
+        analysisMutex.withLock {
+            withContext(Dispatchers.IO) {
         // If process is dead, fail over immediately to fallback without hanging
         if (process == null || process?.isAlive != true) {
             return@withContext fallbackClient.analyze(request)
@@ -192,7 +228,8 @@ class StockfishProcessEngineClient(
             pendingResult = null
             fallbackClient.analyze(request)
         }
-    }
+            }
+        }
 
     override suspend fun stop() {
         send("stop")
@@ -209,11 +246,10 @@ class StockfishProcessEngineClient(
 
     private fun send(command: String): Boolean {
         return try {
-            stdinWriter?.apply {
-                write(command)
-                newLine()
-                flush()
-            }
+            val writer = stdinWriter ?: return false
+            writer.write(command)
+            writer.newLine()
+            writer.flush()
             true
         } catch (_: Exception) {
             false

@@ -97,4 +97,307 @@ class ChessCoreTest {
     val pos = Position.fromFen(fen)
     assertEquals(fen, pos.toFen())
   }
+
+  @Test
+  fun testFenParserRejectsMalformedFields() {
+    val malformed = listOf(
+      "8/8/8/8/8/8/8/K6k w - - 0",
+      "8/8/8/8/8/8/8/K6k x - - 0 1",
+      "8/8/8/8/8/8/8/K6k w KK - 0 1",
+      "8/8/8/8/8/8/8/K6k w - -1 1",
+      "8/8/8/8/8/8/8/K6k w - - 0 0",
+      "8/8/8/8/8/8/8/K7 w - - 0 1",
+      "9/8/8/8/8/8/8/K6k w - - 0 1"
+    )
+
+    malformed.forEach { fen ->
+      assertFalse("FEN should be rejected: $fen", Position.tryFromFen(fen).isSuccess)
+    }
+  }
+
+  @Test
+  fun testPromotionGeneratesAllFourChoices() {
+    val pos = Position.fromFen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+    val promotions = LegalMoveGenerator.generateLegalMoves(pos)
+      .filter { it.from == Square.fromAlgebraic("a7") && it.to == Square.fromAlgebraic("a8") }
+
+    assertEquals(4, promotions.size)
+    assertTrue(promotions.any { it.promotion == PieceType.QUEEN })
+    assertTrue(promotions.any { it.promotion == PieceType.ROOK })
+    assertTrue(promotions.any { it.promotion == PieceType.BISHOP })
+    assertTrue(promotions.any { it.promotion == PieceType.KNIGHT })
+  }
+
+  @Test
+  fun testCastlingRequiresActualRook() {
+    val pos = Position.fromFen("4k3/8/8/8/8/8/8/4K3 w KQ - 0 1")
+    val moves = LegalMoveGenerator.generateLegalMoves(pos)
+
+    assertFalse(moves.any { it.isCastling })
+  }
+
+  @Test
+  fun testKingCannotBeCapturedAsALegalMove() {
+    val pos = Position.fromFen("4k3/8/8/8/8/8/8/4R1K1 w - - 0 1")
+    val moves = LegalMoveGenerator.generateLegalMoves(pos)
+
+    assertFalse(
+      moves.any {
+        it.to == Square.fromAlgebraic("e8")
+      }
+    )
+  }
+
+  @Test
+  fun testSameColorBishopsAreInsufficientMaterial() {
+    val pos = Position.fromFen("4k3/8/8/8/8/8/6B1/4K2b w - - 0 1")
+    assertEquals(
+      GameStatus.DRAW_INSUFFICIENT_MATERIAL,
+      LegalMoveGenerator.getGameStatus(pos)
+    )
+  }
+
+  @Test
+  fun testCastlingOutOfCheckIsIllegal() {
+    val pos = Position.fromFen("4k3/8/8/8/8/8/4r3/R3K2R w KQ - 0 1")
+    val moves = LegalMoveGenerator.generateLegalMoves(pos)
+
+    assertFalse(moves.any { it.isCastling })
+  }
+
+  @Test
+  fun testCastlingThroughCheckIsIllegal() {
+    val pos = Position.fromFen("4k3/8/8/8/8/8/5r2/R3K2R w KQ - 0 1")
+    val moves = LegalMoveGenerator.generateLegalMoves(pos)
+
+    assertFalse(moves.any { it.from == Square.fromAlgebraic("e1") && it.to == Square.fromAlgebraic("g1") })
+  }
+
+  @Test
+  fun testCastlingIntoCheckIsIllegal() {
+    val pos = Position.fromFen("4k3/8/8/8/8/8/6r1/R3K2R w KQ - 0 1")
+    val moves = LegalMoveGenerator.generateLegalMoves(pos)
+
+    assertFalse(moves.any { it.from == Square.fromAlgebraic("e1") && it.to == Square.fromAlgebraic("g1") })
+  }
+
+  @Test
+  fun testPinnedPieceCannotExposeOwnKing() {
+    val pos = Position.fromFen("4r1k1/8/8/8/8/8/4R3/4K3 w - - 0 1")
+    val moves = LegalMoveGenerator.generateLegalMoves(pos)
+
+    assertFalse(
+      moves.any {
+        it.from == Square.fromAlgebraic("e2") &&
+          it.to == Square.fromAlgebraic("a2")
+      }
+    )
+  }
+
+  @Test
+  fun testEnPassantCannotExposeOwnKing() {
+    val pos = Position.fromFen("4r1k1/3p4/8/4P3/8/8/8/4K3 w - d6 0 1")
+    val moves = LegalMoveGenerator.generateLegalMoves(pos)
+
+    assertFalse(
+      moves.any {
+        it.from == Square.fromAlgebraic("e5") &&
+          it.to == Square.fromAlgebraic("d6") &&
+          it.isEnPassant
+      }
+    )
+  }
+
+  @Test
+  fun testPromotionMoveUpdatesBoard() {
+    val pos = Position.fromFen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+    val promotion = LegalMoveGenerator.generateLegalMoves(pos)
+      .first { it.from == Square.fromAlgebraic("a7") &&
+        it.to == Square.fromAlgebraic("a8") &&
+        it.promotion == PieceType.KNIGHT }
+
+    val next = LegalMoveGenerator.makeMove(pos, promotion)
+
+    assertEquals(
+      Piece(PieceType.KNIGHT, PieceColor.WHITE),
+      next.pieceAt(Square.fromAlgebraic("a8"))
+    )
+    assertEquals(null, next.pieceAt(Square.fromAlgebraic("a7")))
+    assertEquals(PieceColor.BLACK, next.sideToMove)
+  }
+
+
+  @Test
+  fun testUciRoundTripPreservesPromotion() {
+    val move = Move.fromUci("a7a8q")
+    assertEquals(Square.fromAlgebraic("a7"), move.from)
+    assertEquals(Square.fromAlgebraic("a8"), move.to)
+    assertEquals(PieceType.QUEEN, move.promotion)
+    assertEquals("a7a8q", move.uci)
+  }
+
+  @Test
+  fun testUciParserRejectsInvalidPromotionSuffix() {
+    try {
+      Move.fromUci("a7a8x")
+      throw AssertionError("Expected invalid promotion suffix to be rejected")
+    } catch (_: IllegalArgumentException) {
+      // Expected.
+    }
+  }
+
+  @Test
+  fun testUciParserRejectsInvalidLength() {
+    try {
+      Move.fromUci("e2e")
+      throw AssertionError("Expected invalid UCI length to be rejected")
+    } catch (_: IllegalArgumentException) {
+      // Expected.
+    }
+  }
+
+  @Test
+  fun testSanUsesFileDisambiguation() {
+    val pos = Position.fromFen("4k3/8/8/8/8/1N3N2/8/4K3 w - - 0 1")
+    val move = LegalMoveGenerator.generateLegalMoves(pos).first {
+      it.from == Square.fromAlgebraic("b3") && it.to == Square.fromAlgebraic("d2")
+    }
+
+    assertEquals("Nbd2", SanFormatter.format(pos, move))
+  }
+
+  @Test
+  fun testSanUsesRankDisambiguation() {
+    val pos = Position.fromFen("4k3/8/8/8/N7/8/N7/4K3 w - - 0 1")
+    val move = LegalMoveGenerator.generateLegalMoves(pos).first {
+      it.from == Square.fromAlgebraic("a2") && it.to == Square.fromAlgebraic("c3")
+    }
+
+    assertEquals("N2c3", SanFormatter.format(pos, move))
+  }
+
+  @Test
+  fun testSanFormatsCastlingAndPromotion() {
+    val castlePos = Position.fromFen("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1")
+    val castle = LegalMoveGenerator.generateLegalMoves(castlePos).first {
+      it.from == Square.fromAlgebraic("e1") && it.to == Square.fromAlgebraic("g1")
+    }
+    assertEquals("O-O", SanFormatter.format(castlePos, castle))
+
+    val promotionPos = Position.fromFen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+    val promotion = LegalMoveGenerator.generateLegalMoves(promotionPos).first {
+      it.from == Square.fromAlgebraic("a7") &&
+        it.to == Square.fromAlgebraic("a8") &&
+        it.promotion == PieceType.QUEEN
+    }
+    assertEquals("a8=Q+", SanFormatter.format(promotionPos, promotion))
+  }
+
+
+  @Test
+  fun testGameStateDetectsThreefoldRepetitionWithoutEndingGame() {
+    var state = GameState()
+
+    repeat(2) {
+      state = state.play(Move.fromUci("g1f3"))
+      state = state.play(Move.fromUci("g8f6"))
+      state = state.play(Move.fromUci("f3g1"))
+      state = state.play(Move.fromUci("f6g8"))
+    }
+
+    assertEquals(3, state.currentPositionOccurrences)
+    assertTrue(state.canClaimThreefoldRepetition)
+    assertEquals(GameStatus.DRAW_THREEFOLD_REPETITION, state.status)
+    assertFalse(state.isOver)
+  }
+
+  @Test
+  fun testGameStateDetectsFivefoldRepetitionAsAutomaticDraw() {
+    var state = GameState()
+
+    repeat(4) {
+      state = state.play(Move.fromUci("g1f3"))
+      state = state.play(Move.fromUci("g8f6"))
+      state = state.play(Move.fromUci("f3g1"))
+      state = state.play(Move.fromUci("f6g8"))
+    }
+
+    assertEquals(5, state.currentPositionOccurrences)
+    assertTrue(state.isFivefoldRepetition)
+    assertEquals(GameStatus.DRAW_FIVEFOLD_REPETITION, state.status)
+    assertTrue(state.isOver)
+  }
+
+  @Test
+  fun testRepetitionKeyIgnoresMoveCounters() {
+    val first = Position.fromFen(
+      "4k3/8/8/8/8/8/4R3/4K3 w - - 0 1"
+    )
+    val second = Position.fromFen(
+      "4k3/8/8/8/8/8/4R3/4K3 w - - 47 24"
+    )
+
+    assertEquals(first.repetitionKey(), second.repetitionKey())
+  }
+
+  @Test
+  fun testRepetitionKeyIgnoresNonCapturableEnPassantSquare() {
+    val withoutEp = Position.fromFen(
+      "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1"
+    )
+    val withIrrelevantEp = Position.fromFen(
+      "4k3/8/8/8/8/8/4P3/4K3 w - e6 0 1"
+    )
+
+    assertEquals(withoutEp.repetitionKey(), withIrrelevantEp.repetitionKey())
+  }
+
+  @Test
+  fun testRepetitionKeyIncludesLegalEnPassantSquare() {
+    val withoutEp = Position.fromFen(
+      "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1"
+    )
+    val withEp = Position.fromFen(
+      "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"
+    )
+
+    assertTrue(
+      LegalMoveGenerator.generateLegalMoves(withEp).any { it.isEnPassant }
+    )
+    assertFalse(withoutEp.repetitionKey() == withEp.repetitionKey())
+  }
+
+  @Test
+  fun testFiftyMoveRuleIsClaimableAt100HalfMoves() {
+    val state = GameState(
+      Position.fromFen("7k/8/8/8/8/8/6R1/6K1 w - - 100 50")
+    )
+
+    assertTrue(state.canClaimFiftyMoveRule)
+    assertEquals(GameStatus.DRAW_50_MOVES, state.status)
+    assertFalse(state.isOver)
+  }
+
+  @Test
+  fun testSeventyFiveMoveRuleIsAutomaticAt150HalfMoves() {
+    val state = GameState(
+      Position.fromFen("7k/8/8/8/8/8/6R1/6K1 w - - 150 75")
+    )
+
+    assertTrue(state.isSeventyFiveMoveDraw)
+    assertEquals(GameStatus.DRAW_75_MOVES, state.status)
+    assertTrue(state.isOver)
+  }
+
+  @Test
+  fun testCheckmateTakesPrecedenceOverSeventyFiveMoveRule() {
+    val state = GameState(
+      Position.fromFen("7k/6Q1/7K/8/8/8/8/8 b - - 150 100")
+    )
+
+    assertEquals(GameStatus.CHECKMATE, state.status)
+    assertTrue(state.isOver)
+  }
+
+
 }

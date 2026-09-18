@@ -126,7 +126,7 @@ object LearnCurriculumRepository {
                 "Look for undefended pieces on same-color squares",
                 "Knight checks cannot be blocked"
             ),
-            demoFen = "r1b1k3/pp3ppp/8/8/1n6/2N5/PP3PPP/R2K1B1R b q - 0 12",
+            demoFen = "r1b1k3/pp3ppp/8/8/1n6/2N5/PP3PPP/R3K2R b q - 0 12",
             recommendedMoveUci = "b4c2",
             moveExplanation = "Nc2 forks White's a1 rook and d1 king."
         ),
@@ -156,8 +156,8 @@ object LearnCurriculumRepository {
                 "Sacrifice queen to force blocking capture",
                 "Knight leaps in for decisive checkmate"
             ),
-            demoFen = "6k1/5ppp/8/8/8/2Q5/5PPP/5RK1 w - - 0 1",
-            recommendedMoveUci = "c3c8",
+            demoFen = "6nk/6pR/8/4N3/8/8/8/6K1 w - - 0 1",
+            recommendedMoveUci = "e5g6",
             moveExplanation = "Qc8# delivers back-rank mate with zero escape squares."
         ),
 
@@ -250,8 +250,8 @@ object LearnCurriculumRepository {
                 "Lift rook to 4th rank",
                 "Shield king from checks with the rook"
             ),
-            demoFen = "1K1R4/3P1k2/8/8/8/8/8/2r5 w - - 0 1",
-            recommendedMoveUci = "d8d4",
+            demoFen = "4K3/4P2k/8/8/8/8/r7/3R4 w - - 0 1",
+            recommendedMoveUci = "d1d4",
             moveExplanation = "Rd4 sets up the 4th-rank bridge to block rook checks."
         ),
         LearnTopic(
@@ -265,7 +265,7 @@ object LearnCurriculumRepository {
                 "Drop rook to back rank when pawn pushes",
                 "Deliver endless vertical checks from behind"
             ),
-            demoFen = "8/8/8/4P3/8/2r5/4K3/1k1R4 b - - 0 1",
+            demoFen = "7k/8/8/4P3/8/2r5/4K3/3R4 b - - 0 1",
             recommendedMoveUci = "c3c6",
             moveExplanation = "Rc6 establishes the classic 6th-rank blockade."
         ),
@@ -312,7 +312,7 @@ object LearnCurriculumRepository {
                 "Guard vulnerable back ranks with rooks",
                 "Infiltrate undefended enemy 1st or 8th ranks"
             ),
-            demoFen = "3r2k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1",
+            demoFen = "6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1",
             recommendedMoveUci = "e1e8",
             moveExplanation = "Re8# delivers decisive back-rank mate."
         ),

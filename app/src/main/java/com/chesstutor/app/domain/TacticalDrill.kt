@@ -14,7 +14,7 @@ object TrainDrillsRepository {
         TacticalDrill(
             id = "drill_mate_1",
             title = "Missed Mate in 1",
-            category = "Forced Mate",
+            category = "Tactical Setup",
             fen = "r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 4",
             solutionUci = "f3f7",
             prompt = "White to move · Find mate in 1"
@@ -23,7 +23,7 @@ object TrainDrillsRepository {
             id = "drill_back_rank",
             title = "Back-Rank Checkmate",
             category = "King Safety",
-            fen = "3r2k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1",
+            fen = "6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1",
             solutionUci = "e1e8",
             prompt = "White to move · Deliver back-rank mate"
         ),
@@ -47,7 +47,7 @@ object TrainDrillsRepository {
             id = "drill_knight_fork",
             title = "Royal Knight Fork",
             category = "Fork & Double Attack",
-            fen = "r1b1k3/pp3ppp/8/8/1n6/2N5/PP3PPP/R2K1B1R b q - 0 12",
+            fen = "r1b1k3/pp3ppp/8/8/1n6/2N5/PP3PPP/R3K2R b q - 0 12",
             solutionUci = "b4c2",
             prompt = "Black to move · Fork King and Rook"
         ),
@@ -60,12 +60,12 @@ object TrainDrillsRepository {
             prompt = "White to move · Shield the King"
         ),
         TacticalDrill(
-            id = "drill_queen_mate",
-            title = "Queen Battery Mate",
+            id = "drill_queen_battery",
+            title = "Bishop Battery Setup",
             category = "Forced Mate",
             fen = "r1b2rk1/pp3ppp/2n5/3p4/3P4/2Q2N2/PP1B1PPP/R3KB1R w - - 0 1",
-            solutionUci = "f1d3",
-            prompt = "White to move · Line up the battery"
+            solutionUci = "d2h6",
+            prompt = "White to move · Set up the kingside attack"
         ),
         TacticalDrill(
             id = "drill_pin_skewer",
@@ -79,8 +79,8 @@ object TrainDrillsRepository {
             id = "drill_lucena",
             title = "Lucena Position",
             category = "Endgame Technique",
-            fen = "1K1R4/3P1k2/8/8/8/8/8/2r5 w - - 0 1",
-            solutionUci = "d8d4",
+            fen = "4K3/4P2k/8/8/8/8/r7/3R4 w - - 0 1",
+            solutionUci = "d1d4",
             prompt = "White to move · Build the 4th-rank bridge"
         ),
         TacticalDrill(

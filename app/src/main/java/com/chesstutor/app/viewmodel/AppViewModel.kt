@@ -15,13 +15,10 @@ import com.chesstutor.app.domain.ReviewItem
 import com.chesstutor.app.domain.ReviewScheduler
 import com.chesstutor.app.domain.SearchConfidence
 import com.chesstutor.app.domain.VerifiedConsequence
-import com.chesstutor.app.engine.AnalysisRequest
 import com.chesstutor.app.engine.BlunderClassifier
 import com.chesstutor.app.engine.BlunderKind
 import com.chesstutor.app.engine.EngineClient
-import com.chesstutor.app.engine.StockfishProcessEngineClient
 import com.example.chess.core.Position
-import com.example.chess.engine.LocalChessEngine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,8 +38,8 @@ class AppViewModel(
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     private val blunderClassifier = BlunderClassifier(thresholdCentipawns = 150)
-    private val localEngine = LocalChessEngine()
-    private var analysisCounter = 0
+    private val localBotMoveSelector = com.chesstutor.app.engine.LocalBotMoveSelector()
+    private val analysisService = com.chesstutor.app.engine.AnalysisService(engine)
 
     // Curated tactical positions featuring verifiable mistakes
     companion object {
@@ -55,6 +52,7 @@ class AppViewModel(
     init {
         viewModelScope.launch {
             runCatching { engine.initialize() }
+            applyBotElo()
             loadReviews()
             selectDrill(0)
             observeLinkedProfile()
@@ -78,9 +76,7 @@ class AppViewModel(
     private fun applyBotElo() {
         val elo = _state.value.effectiveBotElo
         viewModelScope.launch {
-            if (engine is StockfishProcessEngineClient) {
-                engine.setElo(elo)
-            }
+            runCatching { engine.setStrengthRating(elo) }
         }
     }
 
@@ -96,17 +92,17 @@ class AppViewModel(
         // If Grandmaster (Stockfish 16, 3200) -> query online Stockfish first
         if (elo >= 2600 || botDifficulty.equals("Grandmaster", ignoreCase = true)) {
             try {
-                val res = engine.analyze(
-                    AnalysisRequest(requestId = ++analysisCounter, fen = fen, depth = 10, movetimeMs = 500)
-                )
-                val matching = chessPos.legalMoves.firstOrNull { it.uci == res.bestMoveUci }
+                val res = analysisService.analyze(fen = fen, depth = 10, movetimeMs = 500)
+                val matching = res?.let { result ->
+                    chessPos.legalMoves.firstOrNull { it.uci == result.bestMoveUci }
+                }
                 if (matching != null) return matching
             } catch (_: Exception) {}
         }
 
         // Calibrated bot move using LocalChessEngine's calibrated blunder & profile logic
         return try {
-            val chosenCoreMove = localEngine.selectMoveForElo(corePos, elo)
+            val chosenCoreMove = localBotMoveSelector.selectMove(corePos, elo)
             chessPos.legalMoves.firstOrNull { it.uci == chosenCoreMove.uci }
                 ?: chessPos.legalMoves.firstOrNull()
         } catch (_: Exception) {
@@ -217,7 +213,7 @@ class AppViewModel(
 
     fun onSquareTapped(square: String) {
         val currentState = _state.value
-        if (currentState.busy) return
+        if (currentState.busy || currentState.pendingPromotion != null) return
 
         val currentSelected = currentState.selectedSquare
         val pos = ChessPosition(currentState.fen)
@@ -236,14 +232,25 @@ class AppViewModel(
         } else {
             if (square in currentState.legalTargets) {
                 // Execute move
-                val move = pos.legalMoves.firstOrNull { it.from == currentSelected && it.to == square }
-                if (move != null) {
-                    when (currentState.tab) {
-                        0 -> playCoachMove(move)
-                        1 -> playCurriculumMove(move)
-                        2 -> playArenaMove(move)
-                        3 -> playReviewMove(move)
+                val matchingMoves = pos.legalMoves.filter {
+                    it.from == currentSelected && it.to == square
+                }
+                if (matchingMoves.size > 1 && matchingMoves.all { it.promotion != null }) {
+                    _state.update {
+                        it.copy(
+                            pendingPromotion = PromotionRequest(
+                                from = currentSelected,
+                                to = square,
+                                choices = matchingMoves.mapNotNull { it.promotion?.lowercaseChar() }.distinct()
+                            )
+                        )
                     }
+                    return
+                }
+
+                val move = matchingMoves.firstOrNull()
+                if (move != null) {
+                    playSelectedMove(move)
                 }
                 _state.update { it.copy(selectedSquare = null, legalTargets = emptySet()) }
             } else {
@@ -260,6 +267,47 @@ class AppViewModel(
                     _state.update { it.copy(selectedSquare = null, legalTargets = emptySet()) }
                 }
             }
+        }
+    }
+
+    private fun playSelectedMove(move: MoveChoice) {
+        when (_state.value.tab) {
+            0 -> playCoachMove(move)
+            1 -> playCurriculumMove(move)
+            2 -> playArenaMove(move)
+            3 -> playReviewMove(move)
+        }
+    }
+
+    fun choosePromotion(piece: Char) {
+        val request = _state.value.pendingPromotion ?: return
+        val choice = piece.lowercaseChar()
+        if (choice !in request.choices) return
+
+        val pos = ChessPosition(_state.value.fen)
+        val move = pos.legalMoves.firstOrNull {
+            it.from == request.from &&
+                it.to == request.to &&
+                it.promotion?.lowercaseChar() == choice
+        } ?: return
+
+        _state.update {
+            it.copy(
+                pendingPromotion = null,
+                selectedSquare = null,
+                legalTargets = emptySet()
+            )
+        }
+        playSelectedMove(move)
+    }
+
+    fun cancelPromotion() {
+        _state.update {
+            it.copy(
+                pendingPromotion = null,
+                selectedSquare = null,
+                legalTargets = emptySet()
+            )
         }
     }
 
@@ -438,7 +486,7 @@ class AppViewModel(
 
     fun showHint() {
         val currentLevel = _state.value.hintLevel
-        val nextLevel = if (currentLevel >= 3) 1 else currentLevel + 1
+        val nextLevel = if (currentLevel >= 4) 0 else currentLevel + 1
 
         val pos = ChessPosition(_state.value.fen)
         val targetUci = _state.value.activeCoachRecommendedMove
@@ -450,33 +498,55 @@ class AppViewModel(
         if (bestMove == null) return
 
         when (nextLevel) {
+            0 -> {
+                _state.update {
+                    it.copy(
+                        hintLevel = 0,
+                        hintText = "",
+                        selectedSquare = null,
+                        legalTargets = emptySet(),
+                        recommendedArrow = null
+                    )
+                }
+            }
             1 -> {
-                // Level 1: Highlight piece
                 _state.update {
                     it.copy(
                         hintLevel = 1,
-                        selectedSquare = bestMove.from,
+                        hintText = "Look for a forcing move: checks, captures, or threats.",
+                        selectedSquare = null,
                         legalTargets = emptySet(),
                         recommendedArrow = null
                     )
                 }
             }
             2 -> {
-                // Level 2: Highlight piece and target square
                 _state.update {
                     it.copy(
                         hintLevel = 2,
+                        hintText = "Start with the ${bestMove.from} piece.",
+                        selectedSquare = bestMove.from,
+                        legalTargets = emptySet(),
+                        recommendedArrow = null
+                    )
+                }
+            }
+            3 -> {
+                _state.update {
+                    it.copy(
+                        hintLevel = 3,
+                        hintText = "The key piece should move to ${bestMove.to}.",
                         selectedSquare = bestMove.from,
                         legalTargets = setOf(bestMove.to),
                         recommendedArrow = null
                     )
                 }
             }
-            3 -> {
-                // Level 3: Draw arrow
+            4 -> {
                 _state.update {
                     it.copy(
-                        hintLevel = 3,
+                        hintLevel = 4,
+                        hintText = "The move is ${bestMove.san}.",
                         selectedSquare = bestMove.from,
                         legalTargets = setOf(bestMove.to),
                         recommendedArrow = Pair(bestMove.from, bestMove.to)
@@ -505,7 +575,6 @@ class AppViewModel(
         }
 
         viewModelScope.launch {
-            val reqId = ++analysisCounter
             val depth = when (_state.value.arenaDifficulty) {
                 "Beginner" -> 1
                 "Casual" -> 2
@@ -513,8 +582,19 @@ class AppViewModel(
                 else -> 4
             }
 
-            val analysisBefore = engine.analyze(AnalysisRequest(reqId, beforeFen, depth = depth))
-            val analysisAfter = engine.analyze(AnalysisRequest(reqId + 1, afterFen, depth = depth))
+            val analysisBefore = analysisService.analyze(fen = beforeFen, depth = depth)
+            val analysisAfter = analysisService.analyze(fen = afterFen, depth = depth)
+
+            if (analysisBefore == null || analysisAfter == null) {
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        opponentThinking = false,
+                        message = "Analysis superseded by a newer position."
+                    )
+                }
+                return@launch
+            }
 
             val verdict = blunderClassifier.classify(analysisBefore, analysisAfter)
             val consequences = mutableListOf<VerifiedConsequence>()
@@ -735,41 +815,80 @@ class AppViewModel(
         }
     }
 
-    private fun playReviewMove(move: MoveChoice) {
-        val activeItem = _state.value.activeReviewItem ?: return
-        val pos = ChessPosition(_state.value.fen)
-        val played = pos.play(move)
-        if (!played) return
+private fun playReviewMove(move: MoveChoice) {
+    val activeItem = _state.value.activeReviewItem ?: return
 
-        val isBest = move.uci == activeItem.bestMoveUci || (pos.isCheckmate && activeItem.explanation.contains("mate", ignoreCase = true))
-        val usedHint = _state.value.hintLevel > 0
+    // Always start from the review position, not whatever position
+    // may currently be displayed after a previous attempt.
+    val reviewFen = activeItem.fen
+    val pos = ChessPosition(reviewFen)
 
+    val played = pos.play(move)
+    if (!played) return
+
+    val isBest =
+        move.uci == activeItem.bestMoveUci ||
+        (
+            pos.isCheckmate &&
+                activeItem.explanation.contains("mate", ignoreCase = true)
+        )
+
+    val usedHint = _state.value.hintLevel > 0
+
+    if (isBest) {
         viewModelScope.launch {
-            ReviewScheduler.recordAttempt(activeItem, correct = isBest, usedHint = usedHint, now = Instant.now())
+            ReviewScheduler.recordAttempt(
+                activeItem,
+                correct = true,
+                usedHint = usedHint,
+                now = Instant.now()
+            )
+
             repository.upsert(activeItem)
             loadReviews()
         }
 
-        if (isBest) {
-            _state.update {
-                it.copy(
-                    fen = pos.fen,
-                    lastMove = Pair(move.from, move.to),
-                    reviewSolved = true,
-                    message = "★ Correct! Spaced repetition updated: Next review in ${ReviewScheduler.intervalsDays.getOrNull(activeItem.stage) ?: 1} days."
-                )
-            }
-        } else {
-            _state.update {
-                it.copy(
-                    fen = pos.fen,
-                    lastMove = Pair(move.from, move.to),
-                    reviewSolved = false,
-                    message = "Incorrect move! Review stage reset to immediate review. Try again!"
-                )
-            }
+        _state.update {
+            it.copy(
+                fen = pos.fen,
+                lastMove = Pair(move.from, move.to),
+                reviewSolved = true,
+                message = "★ Correct! Spaced repetition updated: Next review in ${
+                    ReviewScheduler.intervalsDays.getOrNull(activeItem.stage) ?: 1
+                } days.",
+                selectedSquare = null,
+                legalTargets = emptySet()
+            )
+        }
+    } else {
+        viewModelScope.launch {
+            ReviewScheduler.recordAttempt(
+                activeItem,
+                correct = false,
+                usedHint = usedHint,
+                now = Instant.now()
+            )
+
+            repository.upsert(activeItem)
+            loadReviews()
+        }
+
+        _state.update {
+            it.copy(
+                // IMPORTANT:
+                // Do not leave the board on the incorrect position.
+                // Return immediately to the original review position.
+                fen = reviewFen,
+                lastMove = null,
+                reviewSolved = false,
+                message = "Incorrect move! Review stage reset to immediate review. Try again!",
+                selectedSquare = null,
+                legalTargets = emptySet(),
+                recommendedArrow = null
+            )
         }
     }
+}
 
     // Curriculum practice & progress
     fun setCurriculumTab(tab: Int) {
@@ -978,48 +1097,15 @@ class AppViewModel(
     }
 
     fun onReviewSquareTapped(square: String, item: ReviewItem) {
-        val selected = _state.value.selectedSquare
-        val pos = ChessPosition(_state.value.fen)
-        if (selected == null) {
-            val piece = pos.pieceAt(square)
-            if (piece != null && (pos.sideToMove == 'w' && piece.isUpperCase() || pos.sideToMove == 'b' && piece.isLowerCase())) {
-                val targets = pos.legalMoves.filter { it.from == square }.map { it.to }.toSet()
-                _state.update { it.copy(selectedSquare = square, legalTargets = targets) }
-            }
-        } else {
-            if (square in _state.value.legalTargets) {
-                val move = pos.legalMoves.firstOrNull { it.from == selected && it.to == square }
-                if (move != null) {
-                    val isCorrect = move.uci == item.bestMoveUci
-                    pos.play(move)
-                    val afterFen = pos.fen
-                    _state.update {
-                        it.copy(
-                            fen = afterFen,
-                            selectedSquare = null,
-                            legalTargets = emptySet(),
-                            lastMove = Pair(move.from, move.to),
-                            reviewSolved = isCorrect,
-                            message = if (isCorrect) "Well played! Mistake resolved." else "Incorrect move. Try again!"
-                        )
-                    }
-                    if (isCorrect) {
-                        viewModelScope.launch {
-                            ReviewScheduler.recordAttempt(
-                                item = item,
-                                correct = true,
-                                usedHint = _state.value.hintLevel > 0,
-                                now = Instant.now()
-                            )
-                            repository.upsert(item)
-                            loadReviews()
-                        }
-                    }
-                }
-            } else {
-                _state.update { it.copy(selectedSquare = null, legalTargets = emptySet()) }
-            }
+        // Review uses the same move-selection and attempt-recording path as
+        // the main board. This keeps retries, wrong answers, hints, and
+        // scheduler updates consistent.
+        if (_state.value.activeReviewItem?.id != item.id) {
+            val index = _state.value.reviews.indexOfFirst { it.id == item.id }
+            if (index < 0) return
+            selectReviewItem(index)
         }
+        onSquareTapped(square)
     }
 
     fun resetArenaGame() {
@@ -1032,23 +1118,20 @@ class AppViewModel(
         viewModelScope.launch {
             try {
                 val start = System.currentTimeMillis()
-                val res = engine.analyze(
-                    AnalysisRequest(
-                        requestId = 9999,
-                        fen = ChessPosition.STARTING_FEN,
-                        movetimeMs = 1000
-                    )
-                )
+                val res = analysisService.analyze(
+                    fen = ChessPosition.STARTING_FEN,
+                    movetimeMs = 1000
+                ) ?: throw IllegalStateException("Engine diagnostics result became stale")
                 val latency = System.currentTimeMillis() - start
                 val diag = com.chesstutor.app.engine.EngineDiagnostics(
-                    engineName = "Stockfish 16 Online Cloud Engine",
+                    engineName = "Chess engine",
                     isAlive = true,
                     bestMove = res.bestMoveUci,
                     centipawns = res.centipawns,
                     depth = res.depth,
                     pv = res.principalVariation.joinToString(" "),
                     latencyMs = latency,
-                    resolvedBinaryPath = "Cloud Stockfish API (stockfish.online & chess-api.com)",
+                    resolvedBinaryPath = "Configured engine chain",
                     launchError = null
                 )
                 android.util.Log.i("StockfishDiagnostics", "Engine diagnostics: $diag")

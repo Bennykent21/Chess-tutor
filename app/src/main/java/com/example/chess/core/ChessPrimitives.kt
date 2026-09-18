@@ -19,7 +19,13 @@ enum class PieceType(val notation: Char, val value: Int) {
   BISHOP('B', 330),
   ROOK('R', 500),
   QUEEN('Q', 900),
-  KING('K', 20000)
+  KING('K', 20000);
+
+  companion object {
+    fun fromNotation(notation: Char): PieceType =
+      entries.firstOrNull { it.notation.equals(notation, ignoreCase = true) }
+        ?: throw IllegalArgumentException("Unknown piece notation: $notation")
+  }
 }
 
 /**
@@ -88,6 +94,10 @@ value class Square(val index: Int) {
 
 /**
  * Move representation.
+ *
+ * UCI is the machine-readable move form. SAN is produced separately by
+ * [SanFormatter] because SAN depends on the complete position and all
+ * competing legal moves.
  */
 data class Move(
   val from: Square,
@@ -98,9 +108,6 @@ data class Move(
 ) {
   val uci: String
     get() = "${from.algebraic}${to.algebraic}${promotion?.notation?.lowercaseChar() ?: ""}"
-
-  val san: String
-    get() = uci
 
   companion object {
     fun fromUci(uci: String): Move {
@@ -113,7 +120,7 @@ data class Move(
           'r' -> PieceType.ROOK
           'b' -> PieceType.BISHOP
           'n' -> PieceType.KNIGHT
-          else -> null
+          else -> throw IllegalArgumentException("Invalid UCI promotion suffix: $uci")
         }
       } else null
       return Move(from, to, promo)
@@ -160,5 +167,8 @@ enum class GameStatus {
   CHECKMATE,
   STALEMATE,
   DRAW_INSUFFICIENT_MATERIAL,
-  DRAW_50_MOVES
+  DRAW_50_MOVES,
+  DRAW_THREEFOLD_REPETITION,
+  DRAW_FIVEFOLD_REPETITION,
+  DRAW_75_MOVES
 }
